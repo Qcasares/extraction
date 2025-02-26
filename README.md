@@ -8,7 +8,7 @@ A Python tool that extracts, analyzes, and restructures content from Word docume
 - Extracts text content and metadata from documents
 - Identifies document structure (headings, sections, etc.)
 - Extracts named entities using natural language processing
-- Optionally uses Ollama AI to enhance analysis
+- Optionally uses AI models (Ollama, OpenAI, Anthropic) to enhance analysis
 - Exports structured data in JSON, XML, or CSV formats
 
 ## Installation
@@ -40,7 +40,11 @@ python -m extraction --input-dir /path/to/documents --format xml
 python -m extraction --input-dir /path/to/documents --verbose
 ```
 
-### Using with Ollama AI
+### Using with AI Integration
+
+The tool supports multiple AI providers for enhanced document analysis:
+
+#### Ollama (Local)
 
 First, ensure you have Ollama running locally or accessible via API. Then:
 
@@ -53,6 +57,39 @@ python -m extraction --input-dir /path/to/documents --use-ai --model mistral
 
 # Use a remote Ollama API
 python -m extraction --input-dir /path/to/documents --use-ai --api-base "http://remote-server:11434/api"
+```
+
+#### OpenAI
+
+```bash
+# Use OpenAI (requires API key)
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --api-key "your-api-key"
+
+# Specify a different model
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "gpt-4-turbo" --api-key "your-api-key"
+```
+
+#### Anthropic Claude
+
+```bash
+# Use Anthropic Claude (requires API key)
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider anthropic --api-key "your-api-key"
+
+# Specify a different model
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider anthropic --model "claude-3-sonnet-20240229" --api-key "your-api-key"
+```
+
+#### Advanced AI Options
+
+```bash
+# Customize AI features
+python -m extraction --input-dir /path/to/documents --use-ai --ai-features "summary,topics,sentiment,insights"
+
+# Adjust response parameters
+python -m extraction --input-dir /path/to/documents --use-ai --temperature 0.3 --max-tokens 4000
+
+# Disable response caching
+python -m extraction --input-dir /path/to/documents --use-ai --disable-ai-cache
 ```
 
 ### Help
@@ -68,12 +105,36 @@ You can also use the tool programmatically:
 ```python
 from extraction.document_processor import DocumentProcessor
 
-# Initialize the processor
+# Initialize the processor with Ollama
 processor = DocumentProcessor(
     input_directory="./documents",
     output_format="json",
     use_ai=True,
-    ollama_model="llama3"
+    ai_provider="ollama",
+    ai_model="llama3"
+)
+
+# Or initialize with OpenAI
+processor = DocumentProcessor(
+    input_directory="./documents",
+    output_format="json",
+    use_ai=True,
+    ai_provider="openai",
+    ai_model="gpt-4o",
+    api_key="your-api-key"
+)
+
+# Configure specific AI features
+processor = DocumentProcessor(
+    input_directory="./documents",
+    output_format="json",
+    use_ai=True,
+    ai_provider="anthropic",
+    ai_model="claude-3-opus-20240229",
+    api_key="your-api-key",
+    ai_features="summary,topics,sentiment",
+    temperature=0.2,
+    max_tokens=3000
 )
 
 # Process documents

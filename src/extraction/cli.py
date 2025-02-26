@@ -47,25 +47,87 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Output format (default: json)",
     )
 
-    parser.add_argument(
+    # AI analysis options
+    ai_group = parser.add_argument_group("AI Analysis Options")
+    
+    ai_group.add_argument(
         "--use-ai",
         action="store_true",
-        help="Use Ollama AI for enhanced analysis",
+        help="Enable AI analysis",
+    )
+    
+    ai_group.add_argument(
+        "--ai-provider",
+        type=str,
+        choices=["ollama", "openai", "anthropic", "none"],
+        default="ollama",
+        help="AI provider to use (default: ollama)",
     )
 
-    parser.add_argument(
+    ai_group.add_argument(
         "--model",
         "-m",
         type=str,
-        default="llama3",
-        help="Ollama model to use (default: llama3)",
+        help=("AI model to use (provider-specific, defaults: "
+              "ollama: 'llama3', openai: 'gpt-4o', anthropic: 'claude-3-opus-20240229')"),
     )
 
-    parser.add_argument(
+    ai_group.add_argument(
         "--api-base",
         type=str,
-        default="http://localhost:11434/api",
-        help="Base URL for Ollama API (default: http://localhost:11434/api)",
+        help=("Base URL for AI provider API (defaults: "
+              "ollama: 'http://localhost:11434/api', openai: 'https://api.openai.com/v1', "
+              "anthropic: 'https://api.anthropic.com/v1')"),
+    )
+    
+    ai_group.add_argument(
+        "--api-key",
+        type=str,
+        default="",
+        help="API key for authentication (required for OpenAI and Anthropic)",
+    )
+    
+    ai_group.add_argument(
+        "--temperature",
+        type=float,
+        default=0.1,
+        help="Temperature parameter for AI generation (0.0-1.0, lower for more focused outputs) (default: 0.1)",
+    )
+    
+    ai_group.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2000,
+        help="Maximum number of tokens for AI response (default: 2000)",
+    )
+    
+    ai_group.add_argument(
+        "--ai-timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds for AI API calls (default: 60)",
+    )
+    
+    ai_group.add_argument(
+        "--ai-features",
+        type=str,
+        default="all",
+        help=("Comma-separated list of AI analysis features to enable: "
+              "summary,topics,categories,sentiment,relationships,quality,suggestions,themes,insights "
+              "(can also be 'all' or 'none', default: all)"),
+    )
+    
+    ai_group.add_argument(
+        "--disable-ai-cache",
+        action="store_true",
+        help="Disable caching of AI responses (cache is enabled by default)",
+    )
+    
+    ai_group.add_argument(
+        "--ai-cache-size",
+        type=int,
+        default=100,
+        help="Maximum number of AI responses to cache (default: 100)",
     )
 
     parser.add_argument(
@@ -98,13 +160,21 @@ def main(args: Optional[List[str]] = None) -> int:
     logger = logging.getLogger(__name__)
 
     try:
-        # Create processor
+        # Create processor with enhanced AI configuration
         processor = DocumentProcessor(
             input_directory=parsed_args.input_dir,
             output_format=parsed_args.format,
             use_ai=parsed_args.use_ai,
-            ollama_model=parsed_args.model if parsed_args.use_ai else None,
-            ollama_api_base=parsed_args.api_base,
+            ai_provider=parsed_args.ai_provider,
+            ai_model=parsed_args.model,
+            api_base=parsed_args.api_base,
+            api_key=parsed_args.api_key,
+            temperature=parsed_args.temperature,
+            max_tokens=parsed_args.max_tokens,
+            timeout=parsed_args.ai_timeout,
+            ai_features=parsed_args.ai_features,
+            ai_cache_enabled=not parsed_args.disable_ai_cache,
+            ai_cache_size=parsed_args.ai_cache_size,
         )
 
         # Process documents

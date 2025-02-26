@@ -3,12 +3,15 @@
 import json
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from csv import DictWriter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import Enum
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import docx
 import requests
@@ -46,6 +49,152 @@ class DocumentSection:
     entities: List[Dict[str, Any]] = field(default_factory=list)
 
 
+class AIProvider(Enum):
+    """Supported AI providers for document analysis."""
+    
+    OLLAMA = "ollama"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    NONE = "none"
+    
+    @classmethod
+    def from_string(cls, value: str) -> "AIProvider":
+        """Convert string to AIProvider enum.
+        
+        Args:
+            value: String representation of AI provider
+            
+        Returns:
+            Corresponding AIProvider enum value
+        """
+        try:
+            return cls(value.lower())
+        except ValueError:
+            logger.warning(f"Unknown AI provider: {value}, defaulting to OLLAMA")
+            return cls.OLLAMA
+
+
+@dataclass
+class AIFeatures:
+    """Available AI analysis features."""
+    
+    summary: bool = True
+    topics: bool = True
+    categories: bool = True
+    sentiment: bool = True
+    relationships: bool = True
+    quality: bool = True
+    suggestions: bool = True
+    themes: bool = True
+    insights: bool = True
+    
+    @classmethod
+    def from_string(cls, features_str: str) -> "AIFeatures":
+        """Parse comma-separated AI features string.
+        
+        Args:
+            features_str: Comma-separated list of AI features or "all"/"none"
+            
+        Returns:
+            AIFeatures instance with appropriate flags set
+        """
+        if features_str.lower() == "all":
+            return cls()
+        
+        if features_str.lower() == "none":
+            return cls(
+                summary=False,
+                topics=False,
+                categories=False,
+                sentiment=False,
+                relationships=False,
+                quality=False,
+                suggestions=False,
+                themes=False,
+                insights=False
+            )
+            
+        # Start with all features disabled
+        features = cls(
+            summary=False,
+            topics=False,
+            categories=False,
+            sentiment=False,
+            relationships=False,
+            quality=False,
+            suggestions=False,
+            themes=False,
+            insights=False
+        )
+        
+        # Enable only specified features
+        for feature in features_str.split(","):
+            feature = feature.strip().lower()
+            if hasattr(features, feature):
+                setattr(features, feature, True)
+                
+        return features
+    
+    def as_dict(self) -> Dict[str, bool]:
+        """Convert to dictionary.
+        
+        Returns:
+            Dictionary mapping feature names to boolean values
+        """
+        return asdict(self)
+    
+    def is_any_enabled(self) -> bool:
+        """Check if any feature is enabled.
+        
+        Returns:
+            True if at least one feature is enabled, False otherwise
+        """
+        return any(asdict(self).values())
+
+
+@dataclass
+class AIConfig:
+    """Configuration for AI-powered document analysis."""
+    
+    enabled: bool = False
+    provider: AIProvider = AIProvider.OLLAMA
+    model: str = "llama3"
+    temperature: float = 0.1
+    max_tokens: int = 2000
+    timeout: int = 60
+    api_base: str = "http://localhost:11434/api"
+    api_key: str = ""
+    features: AIFeatures = field(default_factory=AIFeatures)
+    cache_enabled: bool = True
+    cache_size: int = 100  # Number of responses to cache
+    
+    def is_enabled(self) -> bool:
+        """Check if AI analysis is enabled and configured.
+        
+        Returns:
+            True if AI analysis is enabled and at least one feature is enabled
+        """
+        return self.enabled and self.provider != AIProvider.NONE and self.features.is_any_enabled()
+
+
+@dataclass
+class AiAnalysis:
+    """AI-generated analysis of a document."""
+    
+    summary: str = ""
+    key_topics: List[str] = field(default_factory=list)
+    content_categories: List[str] = field(default_factory=list)
+    sentiment: str = ""
+    entity_relationships: List[Dict[str, Any]] = field(default_factory=list)
+    document_quality_score: float = 0.0
+    improvement_suggestions: List[str] = field(default_factory=list)
+    themes: List[Dict[str, Any]] = field(default_factory=list)
+    key_insights: List[str] = field(default_factory=list)
+    provider: AIProvider = AIProvider.NONE
+    model: str = ""
+    processing_time: float = 0.0
+
+
 @dataclass
 class ProcessedDocument:
     """Document with extracted and processed content."""
@@ -53,14 +202,20 @@ class ProcessedDocument:
     metadata: DocumentMetadata
     sections: List[DocumentSection] = field(default_factory=list)
     raw_text: str = ""
+    ai_analysis: Optional[AiAnalysis] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "metadata": asdict(self.metadata),
             "sections": [asdict(section) for section in self.sections],
             "raw_text": self.raw_text,
         }
+        
+        if self.ai_analysis:
+            result["ai_analysis"] = asdict(self.ai_analysis)
+            
+        return result
 
 
 class DocumentProcessor:
@@ -71,8 +226,16 @@ class DocumentProcessor:
         input_directory: str,
         output_format: str = "json",
         use_ai: bool = False,
-        ollama_model: Optional[str] = None,
-        ollama_api_base: str = "http://localhost:11434/api",
+        ai_provider: str = "ollama",
+        ai_model: Optional[str] = None,
+        api_base: Optional[str] = None,
+        api_key: str = "",
+        temperature: float = 0.1,
+        max_tokens: int = 2000,
+        timeout: int = 60,
+        ai_features: str = "all",
+        ai_cache_enabled: bool = True,
+        ai_cache_size: int = 100,
     ) -> None:
         """Initialize the document processor.
 
@@ -80,16 +243,61 @@ class DocumentProcessor:
             input_directory: Directory to process documents from
             output_format: Output format (json, xml, csv)
             use_ai: Whether to use AI for analysis
-            ollama_model: Ollama model to use
-            ollama_api_base: Base URL for Ollama API
+            ai_provider: AI provider to use (ollama, openai, anthropic, none)
+            ai_model: Model to use (provider-specific)
+            api_base: Base URL for API calls
+            api_key: API key for authentication (needed for OpenAI and Anthropic)
+            temperature: Temperature parameter for AI generation (0.0-1.0)
+            max_tokens: Maximum number of tokens for AI response
+            timeout: Timeout in seconds for API calls
+            ai_features: Comma-separated list of AI analysis features to enable
+            ai_cache_enabled: Whether to cache AI responses
+            ai_cache_size: Number of AI responses to cache
         """
         self.input_directory = Path(input_directory)
         self.output_format = output_format.lower()
-        self.use_ai = use_ai
-        self.ollama_model = ollama_model
-        self.ollama_api_base = ollama_api_base
         self.nlp = spacy.load("en_core_web_sm")
         self.processed_documents: List[ProcessedDocument] = []
+
+        # Configure AI
+        provider = AIProvider.from_string(ai_provider)
+        features = AIFeatures.from_string(ai_features)
+        
+        # Set provider-specific defaults if not provided
+        if api_base is None:
+            if provider == AIProvider.OLLAMA:
+                api_base = "http://localhost:11434/api"
+            elif provider == AIProvider.OPENAI:
+                api_base = "https://api.openai.com/v1"
+            elif provider == AIProvider.ANTHROPIC:
+                api_base = "https://api.anthropic.com/v1"
+            else:
+                api_base = ""
+                
+        # Set provider-specific default models if not provided
+        if ai_model is None:
+            if provider == AIProvider.OLLAMA:
+                ai_model = "llama3"
+            elif provider == AIProvider.OPENAI:
+                ai_model = "gpt-4o"
+            elif provider == AIProvider.ANTHROPIC:
+                ai_model = "claude-3-opus-20240229"
+            else:
+                ai_model = ""
+        
+        self.ai_config = AIConfig(
+            enabled=use_ai,
+            provider=provider,
+            model=ai_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            api_base=api_base,
+            api_key=api_key,
+            features=features,
+            cache_enabled=ai_cache_enabled,
+            cache_size=ai_cache_size,
+        )
 
         # Validate input directory
         if not self.input_directory.exists():
@@ -104,10 +312,14 @@ class DocumentProcessor:
             )
 
         logger.info(
-            "Initialized DocumentProcessor with input_directory=%s, output_format=%s, use_ai=%s",
+            "Initialized DocumentProcessor with input_directory=%s, output_format=%s, ai_enabled=%s, "
+            "provider=%s, model=%s, features=%s",
             input_directory,
             output_format,
-            use_ai,
+            self.ai_config.enabled,
+            self.ai_config.provider.value,
+            self.ai_config.model,
+            ",".join(k for k, v in self.ai_config.features.as_dict().items() if v),
         )
 
     def find_documents(self) -> List[Path]:
@@ -255,59 +467,448 @@ class DocumentProcessor:
 
             section.entities = entities
 
+    def _generate_prompt_template(self, processed_doc: ProcessedDocument) -> str:
+        """Generate a prompt template for AI analysis.
+        
+        Args:
+            processed_doc: The document to analyze
+            
+        Returns:
+            A formatted prompt template
+        """
+        # Extract section titles for context
+        section_titles = [section.title for section in processed_doc.sections]
+        section_titles_str = "\n".join([f"- {title}" for title in section_titles])
+        
+        # Extract entities for context
+        all_entities = []
+        for section in processed_doc.sections:
+            all_entities.extend([entity["text"] for entity in section.entities])
+        unique_entities = list(set(all_entities))[:20]  # Limit to avoid token limits
+        entities_str = ", ".join(unique_entities)
+        
+        # Get document content (truncated if necessary)
+        max_content_length = 3000  # Adjust based on provider token limits
+        doc_content = processed_doc.raw_text[:max_content_length]
+        if len(processed_doc.raw_text) > max_content_length:
+            doc_content += "..."
+        
+        # Build JSON structure based on enabled features
+        json_structure_parts = []
+        features = self.ai_config.features
+        
+        if features.summary:
+            json_structure_parts.append('"summary": "A concise 2-3 sentence summary of the entire document"')
+            
+        if features.topics:
+            json_structure_parts.append('"key_topics": ["topic1", "topic2", "topic3", ...]')
+            
+        if features.categories:
+            json_structure_parts.append('"content_categories": ["category1", "category2", ...]')
+            
+        if features.sentiment:
+            json_structure_parts.append('"sentiment": "The overall sentiment of the document (positive, negative, neutral, or mixed)"')
+            
+        if features.relationships:
+            json_structure_parts.append(
+                '"entity_relationships": [\n'
+                '    {\n'
+                '        "entity1": "Name of first entity",\n'
+                '        "entity2": "Name of second entity",\n'
+                '        "relationship": "Description of relationship"\n'
+                '    },\n'
+                '    ...\n'
+                ']'
+            )
+            
+        if features.quality:
+            json_structure_parts.append('"document_quality_score": A score from 0.0 to 10.0 rating the quality of the document')
+            
+        if features.suggestions:
+            json_structure_parts.append(
+                '"improvement_suggestions": [\n'
+                '    "Suggestion 1",\n'
+                '    "Suggestion 2",\n'
+                '    ...\n'
+                ']'
+            )
+            
+        if features.themes:
+            json_structure_parts.append(
+                '"themes": [\n'
+                '    {\n'
+                '        "theme": "Theme name",\n'
+                '        "relevance_score": Score from 0.0 to 1.0,\n'
+                '        "sections": ["Section where theme appears", ...]\n'
+                '    },\n'
+                '    ...\n'
+                ']'
+            )
+            
+        if features.insights:
+            json_structure_parts.append(
+                '"key_insights": [\n'
+                '    "Key insight 1",\n'
+                '    "Key insight 2",\n'
+                '    ...\n'
+                ']'
+            )
+            
+        # Join all parts with commas
+        json_structure = ",\n".join(json_structure_parts)
+        
+        # Prepare the comprehensive analysis prompt
+        return f"""
+        Please perform a comprehensive analysis of this document. Return your response in JSON format according to the structure below.
+        
+        Document Title: {processed_doc.metadata.title}
+        Author: {processed_doc.metadata.author}
+        Created Date: {processed_doc.metadata.created_date}
+        
+        Document Content (partial):
+        {doc_content}
+        
+        Document Sections:
+        {section_titles_str}
+        
+        Key Entities Identified:
+        {entities_str}
+        
+        Perform a comprehensive analysis and return a JSON response with the following structure:
+        {{
+{json_structure}
+        }}
+        
+        IMPORTANT: Respond ONLY with the JSON. Do not include any other text.
+        """
+        
+    @lru_cache(maxsize=100)
+    def _get_ai_response_cached(
+        self, 
+        prompt: str, 
+        provider: AIProvider, 
+        model: str, 
+        temperature: float, 
+        max_tokens: int
+    ) -> Tuple[bool, str]:
+        """Get AI response with caching to avoid redundant calls.
+        
+        Args:
+            prompt: The prompt to send to the AI
+            provider: AI provider to use
+            model: Model to use
+            temperature: Temperature parameter
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Tuple of (success, response)
+        """
+        try:
+            if provider == AIProvider.OLLAMA:
+                return self._get_ollama_response(prompt, model, temperature, max_tokens)
+            elif provider == AIProvider.OPENAI:
+                return self._get_openai_response(prompt, model, temperature, max_tokens)
+            elif provider == AIProvider.ANTHROPIC:
+                return self._get_anthropic_response(prompt, model, temperature, max_tokens)
+            else:
+                return False, "No AI provider configured"
+        except Exception as e:
+            logger.error(f"Error getting AI response: {str(e)}")
+            return False, f"Error: {str(e)}"
+    
+    def _get_ollama_response(
+        self, prompt: str, model: str, temperature: float, max_tokens: int
+    ) -> Tuple[bool, str]:
+        """Get response from Ollama API.
+        
+        Args:
+            prompt: The prompt to send
+            model: Ollama model to use
+            temperature: Temperature parameter
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Tuple of (success, response)
+        """
+        try:
+            response = requests.post(
+                f"{self.ai_config.api_base}/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": temperature,
+                    "top_p": 0.9,
+                    "max_tokens": max_tokens,
+                },
+                timeout=self.ai_config.timeout,
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return True, result.get("response", "")
+            else:
+                logger.warning(
+                    f"Ollama API error: {response.status_code}, {response.text}"
+                )
+                return False, f"API error: {response.status_code}"
+        except Exception as e:
+            logger.error(f"Ollama API exception: {str(e)}")
+            return False, f"Error: {str(e)}"
+    
+    def _get_openai_response(
+        self, prompt: str, model: str, temperature: float, max_tokens: int
+    ) -> Tuple[bool, str]:
+        """Get response from OpenAI API.
+        
+        Args:
+            prompt: The prompt to send
+            model: OpenAI model to use
+            temperature: Temperature parameter
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Tuple of (success, response)
+        """
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.ai_config.api_key}"
+            }
+            
+            response = requests.post(
+                f"{self.ai_config.api_base}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "You are a document analysis assistant that responds in JSON format."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "response_format": {"type": "json_object"}
+                },
+                headers=headers,
+                timeout=self.ai_config.timeout,
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return True, result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            else:
+                logger.warning(
+                    f"OpenAI API error: {response.status_code}, {response.text}"
+                )
+                return False, f"API error: {response.status_code}"
+        except Exception as e:
+            logger.error(f"OpenAI API exception: {str(e)}")
+            return False, f"Error: {str(e)}"
+    
+    def _get_anthropic_response(
+        self, prompt: str, model: str, temperature: float, max_tokens: int
+    ) -> Tuple[bool, str]:
+        """Get response from Anthropic API.
+        
+        Args:
+            prompt: The prompt to send
+            model: Anthropic model to use
+            temperature: Temperature parameter
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Tuple of (success, response)
+        """
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": self.ai_config.api_key,
+                "anthropic-version": "2023-06-01"
+            }
+            
+            response = requests.post(
+                f"{self.ai_config.api_base}/messages",
+                json={
+                    "model": model,
+                    "system": "You are a document analysis assistant that responds in JSON format.",
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens
+                },
+                headers=headers,
+                timeout=self.ai_config.timeout,
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return True, result.get("content", [{}])[0].get("text", "")
+            else:
+                logger.warning(
+                    f"Anthropic API error: {response.status_code}, {response.text}"
+                )
+                return False, f"API error: {response.status_code}"
+        except Exception as e:
+            logger.error(f"Anthropic API exception: {str(e)}")
+            return False, f"Error: {str(e)}"
+            
+    def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse AI response text to extract JSON data.
+        
+        Args:
+            response_text: Raw response text from AI
+            
+        Returns:
+            Parsed JSON data or empty dict on failure
+        """
+        try:
+            # Try direct JSON parsing first
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            # Find JSON in response (in case model outputs additional text)
+            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            matches = re.findall(json_pattern, response_text)
+            
+            if matches:
+                # Use the largest match as it's most likely to be our complete response
+                try:
+                    json_str = max(matches, key=len)
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse JSON from largest match")
+            
+            # Try a more aggressive approach to find valid JSON
+            for potential_json in matches:
+                try:
+                    return json.loads(potential_json)
+                except json.JSONDecodeError:
+                    continue
+                    
+            # If we get here, no valid JSON was found
+            logger.warning("No valid JSON found in response")
+            return {}
+
     def analyze_with_ai(self, processed_doc: ProcessedDocument) -> None:
-        """Use Ollama AI to enhance document analysis.
+        """Use AI to enhance document analysis with advanced features.
 
         Args:
             processed_doc: Processed document to analyze
         """
-        if not self.use_ai or not self.ollama_model:
+        # Skip if AI is not configured or no features are enabled
+        if not self.ai_config.is_enabled():
             return
 
+        import time
+        start_time = time.time()
+        
         try:
-            # Prepare the prompt with document content
-            prompt = f"""
-            Please analyze this document and identify key sections, entities, and structure.
+            # Generate prompt
+            prompt = self._generate_prompt_template(processed_doc)
             
-            Document Title: {processed_doc.metadata.title}
-            Document Content:
-            {processed_doc.raw_text[:1000]}...
-            
-            Provide a structured analysis with:
-            1. Key topics
-            2. Main entities mentioned
-            3. Relationships between entities
-            4. Document structure
-            """
-
-            # Call Ollama API
-            response = requests.post(
-                f"{self.ollama_api_base}/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
-                timeout=30,
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                # Process AI response here - actual implementation would depend on how
-                # you want to use the AI analysis
-                logger.info(
-                    "AI analysis completed for %s", processed_doc.metadata.filename
+            # Get AI response (with caching if enabled)
+            if self.ai_config.cache_enabled:
+                success, ai_response = self._get_ai_response_cached(
+                    prompt=prompt,
+                    provider=self.ai_config.provider,
+                    model=self.ai_config.model,
+                    temperature=self.ai_config.temperature,
+                    max_tokens=self.ai_config.max_tokens
                 )
             else:
-                logger.warning(
-                    "Failed to get AI analysis: %s, %s",
-                    response.status_code,
-                    response.text,
-                )
+                # Get response without caching
+                if self.ai_config.provider == AIProvider.OLLAMA:
+                    success, ai_response = self._get_ollama_response(
+                        prompt, self.ai_config.model, self.ai_config.temperature, self.ai_config.max_tokens
+                    )
+                elif self.ai_config.provider == AIProvider.OPENAI:
+                    success, ai_response = self._get_openai_response(
+                        prompt, self.ai_config.model, self.ai_config.temperature, self.ai_config.max_tokens
+                    )
+                elif self.ai_config.provider == AIProvider.ANTHROPIC:
+                    success, ai_response = self._get_anthropic_response(
+                        prompt, self.ai_config.model, self.ai_config.temperature, self.ai_config.max_tokens
+                    )
+                else:
+                    success = False
+                    ai_response = "No AI provider configured"
+            
+            if success:
+                # Parse JSON response
+                json_data = self._parse_ai_response(ai_response)
+                
+                if json_data:
+                    # Create AiAnalysis object from JSON response
+                    ai_analysis = AiAnalysis(
+                        summary=json_data.get("summary", ""),
+                        key_topics=json_data.get("key_topics", []),
+                        content_categories=json_data.get("content_categories", []),
+                        sentiment=json_data.get("sentiment", ""),
+                        entity_relationships=json_data.get("entity_relationships", []),
+                        document_quality_score=json_data.get("document_quality_score", 0.0),
+                        improvement_suggestions=json_data.get("improvement_suggestions", []),
+                        themes=json_data.get("themes", []),
+                        key_insights=json_data.get("key_insights", []),
+                        provider=self.ai_config.provider,
+                        model=self.ai_config.model,
+                        processing_time=time.time() - start_time
+                    )
+                    
+                    # Attach AI analysis to processed document
+                    processed_doc.ai_analysis = ai_analysis
+                    
+                    logger.info(
+                        "AI analysis completed for %s using %s model %s (%.2fs)",
+                        processed_doc.metadata.filename,
+                        self.ai_config.provider.value,
+                        self.ai_config.model,
+                        ai_analysis.processing_time
+                    )
+                else:
+                    # Try simple extraction as fallback
+                    logger.warning("Failed to parse JSON response, trying simple extraction")
+                    self._extract_simple_analysis(processed_doc, ai_response)
+            else:
+                logger.warning(f"Failed to get AI analysis: {ai_response}")
+                
         except Exception as e:
-            logger.error("Error during AI analysis: %s", str(e))
+            logger.error(f"Error during AI analysis: {str(e)}")
+            # Log exception details for debugging
+            import traceback
+            logger.debug(f"AI analysis exception details: {traceback.format_exc()}")
             # Fall back to rule-based analysis
             logger.info("Falling back to rule-based analysis")
+            
+    def _extract_simple_analysis(self, processed_doc: ProcessedDocument, ai_response: str) -> None:
+        """Extract simple analysis from AI response when JSON parsing fails.
+        
+        Args:
+            processed_doc: The document being processed
+            ai_response: The raw AI response text
+        """
+        # Create a basic AI analysis with whatever we can extract
+        ai_analysis = AiAnalysis()
+        
+        # Try to extract summary (look for "summary" section)
+        summary_match = re.search(r"summary[\"']?\s*:?\s*[\"']([^\"']+)[\"']", ai_response, re.IGNORECASE)
+        if summary_match:
+            ai_analysis.summary = summary_match.group(1).strip()
+            
+        # Try to extract key topics
+        topics_match = re.search(r"key[_\s]topics[\"']?\s*:?\s*\[(.*?)\]", ai_response, re.IGNORECASE | re.DOTALL)
+        if topics_match:
+            topics_text = topics_match.group(1)
+            # Extract quoted strings
+            topics = re.findall(r"[\"']([^\"']+)[\"']", topics_text)
+            ai_analysis.key_topics = topics
+            
+        # Try to extract sentiment
+        sentiment_match = re.search(r"sentiment[\"']?\s*:?\s*[\"']([^\"']+)[\"']", ai_response, re.IGNORECASE)
+        if sentiment_match:
+            ai_analysis.sentiment = sentiment_match.group(1).strip()
+            
+        # Add the basic analysis to the document
+        processed_doc.ai_analysis = ai_analysis
+        logger.info("Simple AI analysis extracted for %s", processed_doc.metadata.filename)
 
     def process_document(self, file_path: Path) -> ProcessedDocument:
         """Process a single document.
@@ -339,17 +940,20 @@ class DocumentProcessor:
                 raw_text=raw_text,
             )
 
-            # Analyze content
+            # Analyze content with spaCy
             self.analyze_content(processed_doc)
 
             # Use AI for enhanced analysis if enabled
-            if self.use_ai and self.ollama_model:
+            if self.ai_config.is_enabled():
                 self.analyze_with_ai(processed_doc)
 
             return processed_doc
 
         except Exception as e:
             logger.error("Error processing document %s: %s", file_path, str(e))
+            import traceback
+            logger.debug(f"Document processing exception details: {traceback.format_exc()}")
+            
             # Return an empty document with error information
             return ProcessedDocument(
                 metadata=DocumentMetadata(
@@ -448,6 +1052,50 @@ class DocumentProcessor:
                     entity_elem = ET.SubElement(entities_elem, "entity")
                     for key, value in entity.items():
                         ET.SubElement(entity_elem, key).text = str(value)
+                        
+            # Add AI analysis if available
+            if doc.ai_analysis:
+                ai_analysis_elem = ET.SubElement(root, "ai_analysis")
+                
+                # Add simple fields
+                ET.SubElement(ai_analysis_elem, "summary").text = doc.ai_analysis.summary
+                ET.SubElement(ai_analysis_elem, "sentiment").text = doc.ai_analysis.sentiment
+                ET.SubElement(ai_analysis_elem, "document_quality_score").text = str(doc.ai_analysis.document_quality_score)
+                
+                # Add list fields
+                topics_elem = ET.SubElement(ai_analysis_elem, "key_topics")
+                for topic in doc.ai_analysis.key_topics:
+                    ET.SubElement(topics_elem, "topic").text = topic
+                    
+                categories_elem = ET.SubElement(ai_analysis_elem, "content_categories")
+                for category in doc.ai_analysis.content_categories:
+                    ET.SubElement(categories_elem, "category").text = category
+                    
+                suggestions_elem = ET.SubElement(ai_analysis_elem, "improvement_suggestions")
+                for suggestion in doc.ai_analysis.improvement_suggestions:
+                    ET.SubElement(suggestions_elem, "suggestion").text = suggestion
+                    
+                insights_elem = ET.SubElement(ai_analysis_elem, "key_insights")
+                for insight in doc.ai_analysis.key_insights:
+                    ET.SubElement(insights_elem, "insight").text = insight
+                
+                # Add complex fields
+                relationships_elem = ET.SubElement(ai_analysis_elem, "entity_relationships")
+                for relationship in doc.ai_analysis.entity_relationships:
+                    relationship_elem = ET.SubElement(relationships_elem, "relationship")
+                    for key, value in relationship.items():
+                        ET.SubElement(relationship_elem, key).text = str(value)
+                        
+                themes_elem = ET.SubElement(ai_analysis_elem, "themes")
+                for theme in doc.ai_analysis.themes:
+                    theme_elem = ET.SubElement(themes_elem, "theme")
+                    for key, value in theme.items():
+                        if key == "sections" and isinstance(value, list):
+                            sections_item = ET.SubElement(theme_elem, "sections")
+                            for section in value:
+                                ET.SubElement(sections_item, "section").text = str(section)
+                        else:
+                            ET.SubElement(theme_elem, key).text = str(value)
 
             # Write to file
             tree = ET.ElementTree(root)
@@ -520,5 +1168,136 @@ class DocumentProcessor:
                                 "entity_label": entity["label"],
                                 "entity_start": entity["start"],
                                 "entity_end": entity["end"],
+                            }
+                        )
+                        
+        # CSV for AI analysis summary
+        ai_analysis_file = output_dir / f"document_ai_analysis_{timestamp}.csv"
+        with open(ai_analysis_file, "w", newline="") as f:
+            fieldnames = [
+                "document_filename",
+                "summary", 
+                "sentiment",
+                "document_quality_score",
+            ]
+            writer = DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for doc in self.processed_documents:
+                if doc.ai_analysis:
+                    writer.writerow(
+                        {
+                            "document_filename": doc.metadata.filename,
+                            "summary": doc.ai_analysis.summary,
+                            "sentiment": doc.ai_analysis.sentiment,
+                            "document_quality_score": doc.ai_analysis.document_quality_score,
+                        }
+                    )
+        
+        # CSV for AI analysis topics and categories
+        topics_file = output_dir / f"document_ai_topics_{timestamp}.csv"
+        with open(topics_file, "w", newline="") as f:
+            fieldnames = [
+                "document_filename",
+                "type",  # "topic", "category", "insight", "suggestion"
+                "value", 
+            ]
+            writer = DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for doc in self.processed_documents:
+                if not doc.ai_analysis:
+                    continue
+                    
+                # Write topics
+                for topic in doc.ai_analysis.key_topics:
+                    writer.writerow(
+                        {
+                            "document_filename": doc.metadata.filename,
+                            "type": "topic",
+                            "value": topic,
+                        }
+                    )
+                
+                # Write categories
+                for category in doc.ai_analysis.content_categories:
+                    writer.writerow(
+                        {
+                            "document_filename": doc.metadata.filename,
+                            "type": "category",
+                            "value": category,
+                        }
+                    )
+                
+                # Write insights
+                for insight in doc.ai_analysis.key_insights:
+                    writer.writerow(
+                        {
+                            "document_filename": doc.metadata.filename,
+                            "type": "insight",
+                            "value": insight,
+                        }
+                    )
+                
+                # Write suggestions
+                for suggestion in doc.ai_analysis.improvement_suggestions:
+                    writer.writerow(
+                        {
+                            "document_filename": doc.metadata.filename,
+                            "type": "suggestion",
+                            "value": suggestion,
+                        }
+                    )
+                    
+        # CSV for entity relationships
+        relationships_file = output_dir / f"document_ai_relationships_{timestamp}.csv"
+        with open(relationships_file, "w", newline="") as f:
+            fieldnames = [
+                "document_filename",
+                "entity1",
+                "entity2",
+                "relationship",
+            ]
+            writer = DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for doc in self.processed_documents:
+                if not doc.ai_analysis:
+                    continue
+                    
+                for relationship in doc.ai_analysis.entity_relationships:
+                    if "entity1" in relationship and "entity2" in relationship and "relationship" in relationship:
+                        writer.writerow(
+                            {
+                                "document_filename": doc.metadata.filename,
+                                "entity1": relationship["entity1"],
+                                "entity2": relationship["entity2"],
+                                "relationship": relationship["relationship"],
+                            }
+                        )
+                        
+        # CSV for themes
+        themes_file = output_dir / f"document_ai_themes_{timestamp}.csv"
+        with open(themes_file, "w", newline="") as f:
+            fieldnames = [
+                "document_filename",
+                "theme",
+                "relevance_score",
+                "sections",
+            ]
+            writer = DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            for doc in self.processed_documents:
+                if not doc.ai_analysis:
+                    continue
+                    
+                for theme in doc.ai_analysis.themes:
+                    if "theme" in theme:
+                        writer.writerow(
+                            {
+                                "document_filename": doc.metadata.filename,
+                                "theme": theme.get("theme", ""),
+                                "relevance_score": theme.get("relevance_score", 0.0),
+                                "sections": ", ".join(theme.get("sections", [])),
                             }
                         )

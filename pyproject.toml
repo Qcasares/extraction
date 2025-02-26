@@ -19,6 +19,9 @@ dependencies = [
     "spacy>=3.5.0",
     "pathlib>=1.0.1",
     "tqdm>=4.65.0",
+    "regex>=2022.1.0",
+    "tenacity>=8.0.0",  # For API retries
+    "pydantic>=2.0.0",  # For data validation (optional)
 ]
 
 [project.optional-dependencies]
