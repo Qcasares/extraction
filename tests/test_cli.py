@@ -40,7 +40,7 @@ def test_parse_args_defaults() -> None:
     assert args.output_dir == "./output"
     assert args.format == "json"
     assert args.use_ai is False
-    assert args.model == "llama3"
+    assert args.model is None  # Default model is set in DocumentProcessor, not CLI
     assert args.verbose is False
 
 
@@ -59,8 +59,16 @@ def test_main_success(mock_processor_class: MagicMock) -> None:
         input_directory="/test/input",
         output_format="json",
         use_ai=False,
-        ollama_model=None,
-        ollama_api_base="http://localhost:11434/api",
+        ai_provider="ollama",
+        ai_model=None,
+        api_base=None,
+        api_key="",
+        temperature=0.1,
+        max_tokens=2000,
+        timeout=60,
+        ai_features="all",
+        ai_cache_enabled=True,
+        ai_cache_size=100,
     )
 
     # Verify methods were called
@@ -86,8 +94,16 @@ def test_main_with_ai(mock_processor_class: MagicMock) -> None:
         input_directory="/test/input",
         output_format="json",
         use_ai=True,
-        ollama_model="llama3",
-        ollama_api_base="http://localhost:11434/api",
+        ai_provider="ollama",
+        ai_model="llama3",
+        api_base=None,
+        api_key="",
+        temperature=0.1,
+        max_tokens=2000,
+        timeout=60,
+        ai_features="all",
+        ai_cache_enabled=True,
+        ai_cache_size=100,
     )
 
     # Verify exit code

@@ -36,3 +36,14 @@ ENV/
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+
+# Other
+.docx
+output/
+*.log
+*.bak
+*.swp
+*.swo
+*.DS_Store
+tests/
+CLAUDE.*

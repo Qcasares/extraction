@@ -69,7 +69,8 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "-m",
         type=str,
         help=("AI model to use (provider-specific, defaults: "
-              "ollama: 'llama3', openai: 'gpt-4o', anthropic: 'claude-3-opus-20240229')"),
+              "ollama: 'llama3', openai: 'gpt-4o' (also supports gpt-4o-mini, o1-preview, o1-mini, o3-preview, o3-mini), "
+              "anthropic: 'claude-3-opus-20240229')"),
     )
 
     ai_group.add_argument(
@@ -91,14 +92,14 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "--temperature",
         type=float,
         default=0.1,
-        help="Temperature parameter for AI generation (0.0-1.0, lower for more focused outputs) (default: 0.1)",
+        help="Temperature parameter for AI generation (0.0-1.0, lower for more focused outputs). Note: Not supported for OpenAI o-series models (gpt-4o, o1-*, o3-*). (default: 0.1)",
     )
     
     ai_group.add_argument(
         "--max-tokens",
         type=int,
         default=2000,
-        help="Maximum number of tokens for AI response (default: 2000)",
+        help="Maximum number of tokens for AI response (used as max_completion_tokens for OpenAI and Anthropic models) (default: 2000)",
     )
     
     ai_group.add_argument(

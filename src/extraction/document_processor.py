@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import traceback
 import xml.etree.ElementTree as ET
 from csv import DictWriter
 from dataclasses import asdict, dataclass, field
@@ -213,7 +214,11 @@ class ProcessedDocument:
         }
         
         if self.ai_analysis:
-            result["ai_analysis"] = asdict(self.ai_analysis)
+            ai_analysis_dict = asdict(self.ai_analysis)
+            # Convert AIProvider enum to string
+            if "provider" in ai_analysis_dict and isinstance(ai_analysis_dict["provider"], AIProvider):
+                ai_analysis_dict["provider"] = ai_analysis_dict["provider"].value
+            result["ai_analysis"] = ai_analysis_dict
             
         return result
 
@@ -248,7 +253,7 @@ class DocumentProcessor:
             api_base: Base URL for API calls
             api_key: API key for authentication (needed for OpenAI and Anthropic)
             temperature: Temperature parameter for AI generation (0.0-1.0)
-            max_tokens: Maximum number of tokens for AI response
+            max_tokens: Maximum number of tokens for AI response (for OpenAI, used as max_completion_tokens)
             timeout: Timeout in seconds for API calls
             ai_features: Comma-separated list of AI analysis features to enable
             ai_cache_enabled: Whether to cache AI responses
@@ -279,7 +284,7 @@ class DocumentProcessor:
             if provider == AIProvider.OLLAMA:
                 ai_model = "llama3"
             elif provider == AIProvider.OPENAI:
-                ai_model = "gpt-4o"
+                ai_model = "gpt-4o"  # Also supports gpt-4o-mini, o1-preview, o1-mini, o3-preview, o3-mini models
             elif provider == AIProvider.ANTHROPIC:
                 ai_model = "claude-3-opus-20240229"
             else:
@@ -598,7 +603,7 @@ class DocumentProcessor:
             provider: AI provider to use
             model: Model to use
             temperature: Temperature parameter
-            max_tokens: Maximum tokens to generate
+            max_tokens: Maximum tokens to generate (for OpenAI, used as max_completion_tokens)
             
         Returns:
             Tuple of (success, response)
@@ -676,18 +681,27 @@ class DocumentProcessor:
                 "Authorization": f"Bearer {self.ai_config.api_key}"
             }
             
+            # Prepare request payload with common parameters
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a document analysis assistant that responds in JSON format."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+            
+            # Use the correct token parameter based on the model
+            payload["max_completion_tokens"] = max_tokens
+            
+            # Add temperature parameter only for models that support it
+            # OpenAI's o-series models (o1, o3, gpt-4o) don't support temperature
+            if not any(model.startswith(prefix) for prefix in ["o", "gpt-4o"]):
+                payload["temperature"] = temperature
+            
             response = requests.post(
                 f"{self.ai_config.api_base}/chat/completions",
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are a document analysis assistant that responds in JSON format."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "response_format": {"type": "json_object"}
-                },
+                json=payload,
                 headers=headers,
                 timeout=self.ai_config.timeout,
             )
@@ -725,17 +739,20 @@ class DocumentProcessor:
                 "anthropic-version": "2023-06-01"
             }
             
+            # Build request payload with the appropriate token parameter
+            payload = {
+                "model": model,
+                "system": "You are a document analysis assistant that responds in JSON format.",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": temperature,
+                "max_completion_tokens": max_tokens
+            }
+            
             response = requests.post(
                 f"{self.ai_config.api_base}/messages",
-                json={
-                    "model": model,
-                    "system": "You are a document analysis assistant that responds in JSON format.",
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens
-                },
+                json=payload,
                 headers=headers,
                 timeout=self.ai_config.timeout,
             )
@@ -744,10 +761,28 @@ class DocumentProcessor:
                 result = response.json()
                 return True, result.get("content", [{}])[0].get("text", "")
             else:
+                # Log the API error
                 logger.warning(
                     f"Anthropic API error: {response.status_code}, {response.text}"
                 )
-                return False, f"API error: {response.status_code}"
+                
+                # Parse the error response to extract more useful information
+                error_message = f"API error: {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "error" in error_data:
+                        error_obj = error_data["error"]
+                        error_type = error_obj.get("type", "")
+                        error_message = error_obj.get("message", error_message)
+                        
+                        # If it's a parameter error, provide more specific guidance
+                        if error_type == "invalid_request_error" and "param" in error_obj:
+                            invalid_param = error_obj.get("param", "")
+                            logger.error(f"Invalid parameter detected: {invalid_param}. Error: {error_message}")
+                except Exception as json_err:
+                    logger.debug(f"Could not parse error response as JSON: {str(json_err)}")
+                
+                return False, f"API error: {error_message}"
         except Exception as e:
             logger.error(f"Anthropic API exception: {str(e)}")
             return False, f"Error: {str(e)}"
@@ -763,7 +798,8 @@ class DocumentProcessor:
         """
         try:
             # Try direct JSON parsing first
-            return json.loads(response_text)
+            parsed_json: Dict[str, Any] = json.loads(response_text)
+            return parsed_json
         except json.JSONDecodeError:
             # Find JSON in response (in case model outputs additional text)
             json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
@@ -773,20 +809,23 @@ class DocumentProcessor:
                 # Use the largest match as it's most likely to be our complete response
                 try:
                     json_str = max(matches, key=len)
-                    return json.loads(json_str)
+                    largest_match_json: Dict[str, Any] = json.loads(json_str)
+                    return largest_match_json
                 except json.JSONDecodeError:
                     logger.warning("Failed to parse JSON from largest match")
             
             # Try a more aggressive approach to find valid JSON
             for potential_json in matches:
                 try:
-                    return json.loads(potential_json)
+                    parsed_result: Dict[str, Any] = json.loads(potential_json)
+                    return parsed_result
                 except json.JSONDecodeError:
                     continue
                     
             # If we get here, no valid JSON was found
             logger.warning("No valid JSON found in response")
-            return {}
+            empty_result: Dict[str, Any] = {}
+            return empty_result
 
     def analyze_with_ai(self, processed_doc: ProcessedDocument) -> None:
         """Use AI to enhance document analysis with advanced features.
@@ -870,10 +909,20 @@ class DocumentProcessor:
             else:
                 logger.warning(f"Failed to get AI analysis: {ai_response}")
                 
+        except requests.exceptions.RequestException as req_err:
+            # Handle request-specific exceptions (timeouts, connection errors, etc.)
+            logger.error(f"API request error during AI analysis: {str(req_err)}")
+            logger.debug(f"API request error details: {traceback.format_exc()}")
+            logger.info("Falling back to rule-based analysis due to API error")
+        except json.JSONDecodeError as json_err:
+            # Handle JSON parsing errors
+            logger.error(f"JSON parsing error during AI analysis: {str(json_err)}")
+            logger.debug(f"JSON parsing error details: {traceback.format_exc()}")
+            logger.info("Falling back to rule-based analysis due to JSON parsing error")
         except Exception as e:
+            # Handle all other exceptions
             logger.error(f"Error during AI analysis: {str(e)}")
             # Log exception details for debugging
-            import traceback
             logger.debug(f"AI analysis exception details: {traceback.format_exc()}")
             # Fall back to rule-based analysis
             logger.info("Falling back to rule-based analysis")
@@ -951,7 +1000,6 @@ class DocumentProcessor:
 
         except Exception as e:
             logger.error("Error processing document %s: %s", file_path, str(e))
-            import traceback
             logger.debug(f"Document processing exception details: {traceback.format_exc()}")
             
             # Return an empty document with error information

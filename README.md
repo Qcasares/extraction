@@ -67,6 +67,13 @@ python -m extraction --input-dir /path/to/documents --use-ai --ai-provider opena
 
 # Specify a different model
 python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "gpt-4-turbo" --api-key "your-api-key"
+
+# Use other OpenAI models
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "gpt-4o-mini" --api-key "your-api-key"
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "o1-preview" --api-key "your-api-key"
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "o1-mini" --api-key "your-api-key"
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "o3-preview" --api-key "your-api-key"
+python -m extraction --input-dir /path/to/documents --use-ai --ai-provider openai --model "o3-mini" --api-key "your-api-key"
 ```
 
 #### Anthropic Claude
@@ -85,7 +92,7 @@ python -m extraction --input-dir /path/to/documents --use-ai --ai-provider anthr
 # Customize AI features
 python -m extraction --input-dir /path/to/documents --use-ai --ai-features "summary,topics,sentiment,insights"
 
-# Adjust response parameters
+# Adjust response parameters (all models use max-tokens parameter with this tool)
 python -m extraction --input-dir /path/to/documents --use-ai --temperature 0.3 --max-tokens 4000
 
 # Disable response caching

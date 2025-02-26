@@ -140,8 +140,8 @@ def test_save_results_json(document_processor: DocumentProcessor, temp_output_di
 def test_analyze_with_ai(mock_post: MagicMock, document_processor: DocumentProcessor, sample_docx: Path) -> None:
     """Test analyzing document with AI."""
     # Configure the processor to use AI
-    document_processor.use_ai = True
-    document_processor.ollama_model = "llama3"
+    document_processor.ai_config.enabled = True
+    document_processor.ai_config.model = "llama3"
 
     # Mock the response
     mock_response = MagicMock()
