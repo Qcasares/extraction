@@ -1,0 +1,85 @@
+<?xml version='1.0' encoding='utf-8'?>
+<document>
+  <metadata>
+    <title />
+    <author>python-docx</author>
+    <created_date>2013-12-23T23:15:00+00:00</created_date>
+    <last_modified_date>2013-12-23T23:15:00+00:00</last_modified_date>
+    <file_path>/Users/quentincasares/Projects/extraction/sample/docs/sample_document.docx</file_path>
+    <filename>sample_document.docx</filename>
+  </metadata>
+  <sections>
+    <section>
+      <title>Introduction</title>
+      <level>0</level>
+      <content>Sample Document</content>
+      <entities />
+    </section>
+    <section>
+      <title>Introduction</title>
+      <level>1</level>
+      <content>This is a sample document created for demonstrating the Word document extraction tool.</content>
+      <entities />
+    </section>
+    <section>
+      <title>Features</title>
+      <level>1</level>
+      <content>The extraction tool can:
+• Extract document content
+• Identify document structure
+• Process metadata
+• Export to structured formats</content>
+      <entities>
+        <entity>
+          <text>• Extract</text>
+          <label>ORG</label>
+          <start>25</start>
+          <end>34</end>
+        </entity>
+        <entity>
+          <text>• Identify</text>
+          <label>ORG</label>
+          <start>52</start>
+          <end>62</end>
+        </entity>
+        <entity>
+          <text>• Process</text>
+          <label>ORG</label>
+          <start>82</start>
+          <end>91</end>
+        </entity>
+        <entity>
+          <text>• Export</text>
+          <label>ORG</label>
+          <start>101</start>
+          <end>109</end>
+        </entity>
+      </entities>
+    </section>
+    <section>
+      <title>Methodology</title>
+      <level>1</level>
+      <content>This document demonstrates heading levels and paragraph styles that the extraction tool can detect and process.</content>
+      <entities />
+    </section>
+    <section>
+      <title>Data Analysis</title>
+      <level>2</level>
+      <content>The tool analyzes the content using Natural Language Processing to identify entities and relationships.</content>
+      <entities>
+        <entity>
+          <text>Natural Language Processing</text>
+          <label>ORG</label>
+          <start>36</start>
+          <end>63</end>
+        </entity>
+      </entities>
+    </section>
+    <section>
+      <title>Conclusion</title>
+      <level>1</level>
+      <content>This sample document provides a good test case for the Word document extraction tool.</content>
+      <entities />
+    </section>
+  </sections>
+</document>

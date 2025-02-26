@@ -1,0 +1,11 @@
+document_filename,section_title,level,content
+sample_document.docx,Introduction,0,Sample Document
+sample_document.docx,Introduction,1,This is a sample document created for demonstrating the Word document extraction tool.
+sample_document.docx,Features,1,"The extraction tool can:
+• Extract document content
+• Identify document structure
+• Process metadata
+• Export to structured formats"
+sample_document.docx,Methodology,1,This document demonstrates heading levels and paragraph styles that the extraction tool can detect and process.
+sample_document.docx,Data Analysis,2,The tool analyzes the content using Natural Language Processing to identify entities and relationships.
+sample_document.docx,Conclusion,1,This sample document provides a good test case for the Word document extraction tool.
