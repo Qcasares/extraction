@@ -843,7 +843,7 @@ class DocumentProcessor:
         try:
             # Generate prompt
             prompt = self._generate_prompt_template(processed_doc)
-            
+
             # Get AI response (with caching if enabled)
             if self.ai_config.cache_enabled:
                 success, ai_response = self._get_ai_response_cached(

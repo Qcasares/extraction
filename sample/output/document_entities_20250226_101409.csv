@@ -1,6 +1,0 @@
-document_filename,section_title,entity_text,entity_label,entity_start,entity_end
-sample_document.docx,Features,• Extract,ORG,25,34
-sample_document.docx,Features,• Identify,ORG,52,62
-sample_document.docx,Features,• Process,ORG,82,91
-sample_document.docx,Features,• Export,ORG,101,109
-sample_document.docx,Data Analysis,Natural Language Processing,ORG,36,63
